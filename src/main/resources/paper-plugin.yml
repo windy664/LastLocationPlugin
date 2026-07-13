@@ -1,0 +1,4 @@
+name: LastLocationPlugin
+version: $version
+main: net.stardime.lastLocationPlugin.LastLocationPlugin
+api-version: '26.2'
