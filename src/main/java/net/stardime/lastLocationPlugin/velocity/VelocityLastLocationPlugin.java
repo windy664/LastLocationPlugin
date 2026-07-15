@@ -51,33 +51,48 @@ public final class VelocityLastLocationPlugin {
         Player player = event.getPlayer();
         String serverName = lastServers.get(player.getUniqueId());
         if (serverName == null) {
+            logger.info("No last server recorded for {} ({}).", player.getUsername(), player.getUniqueId());
             return completedTask();
         }
 
         RegisteredServer server = proxy.getServer(serverName).orElse(null);
         if (server == null) {
+            logger.warn("Last server {} for {} ({}) is not registered.", serverName, player.getUsername(), player.getUniqueId());
             return completedTask();
         }
 
         CompletableFuture<Void> checkServer = server.ping()
                 .orTimeout(PING_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
-                .thenAccept(ping -> event.setInitialServer(server))
-                .exceptionally(throwable -> null);
+                .thenAccept(ping -> {
+                    event.setInitialServer(server);
+                    logger.info("Restoring {} ({}) to last server {}.", player.getUsername(), player.getUniqueId(), serverName);
+                })
+                .exceptionally(throwable -> {
+                    logger.warn("Last server {} for {} ({}) did not respond in time: {}",
+                            serverName, player.getUsername(), player.getUniqueId(), throwable.toString());
+                    return null;
+                });
         return EventTask.resumeWhenComplete(checkServer);
     }
 
     @Subscribe(order = PostOrder.LAST)
     public void onKickedFromServer(KickedFromServerEvent event) {
         if (event.kickedDuringServerConnect()) {
+            logger.info("Ignoring kick during server connect for {} ({}).",
+                    event.getPlayer().getUsername(), event.getPlayer().getUniqueId());
             return;
         }
 
         UUID uuid = event.getPlayer().getUniqueId();
         String serverName = event.getServer().getServerInfo().getName();
         lastServers.put(uuid, serverName);
+        logger.info("Saved last server for {} ({}) as {} after kick.",
+                event.getPlayer().getUsername(), uuid, serverName);
 
         if (event.getResult() instanceof KickedFromServerEvent.RedirectPlayer) {
             preserveNextServerChange.put(uuid, Boolean.TRUE);
+            logger.info("Preserving {} as last server for {} ({}) because the kick redirected the player.",
+                    serverName, event.getPlayer().getUsername(), uuid);
         }
     }
 
@@ -93,10 +108,13 @@ public final class VelocityLastLocationPlugin {
         }
 
         if (preserveNextServerChange.remove(uuid) != null) {
+            logger.info("Kept previous last-server entry for {} ({}) after redirect to {}.",
+                    player.getUsername(), uuid, serverName);
             return;
         }
 
         lastServers.put(uuid, serverName);
+        logger.info("Saved last server for {} ({}) as {}.", player.getUsername(), uuid, serverName);
     }
 
     private EventTask completedTask() {
