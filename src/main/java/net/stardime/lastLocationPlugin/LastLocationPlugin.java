@@ -1,5 +1,6 @@
 package net.stardime.lastLocationPlugin;
 
+import net.stardime.lastLocationPlugin.i18n.Messages;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -20,6 +21,7 @@ public class LastLocationPlugin extends JavaPlugin implements Listener {
 
     private File locFile;
     private FileConfiguration locConfig;
+    private Messages messages = Messages.empty();
 
     @Override
     public void onEnable() {
@@ -27,25 +29,27 @@ public class LastLocationPlugin extends JavaPlugin implements Listener {
             getDataFolder().mkdirs();
         }
 
+        loadMessages();
         locFile = new File(getDataFolder(), "locations.yml");
         if (!locFile.exists()) {
             try {
                 locFile.createNewFile();
             } catch (IOException e) {
-                getLogger().severe("Failed to create locations.yml");
+                getLogger().severe(msg("paper.locations.create-failed"));
                 e.printStackTrace();
             }
         }
         locConfig = YamlConfiguration.loadConfiguration(locFile);
 
         Bukkit.getPluginManager().registerEvents(this, this);
-        getLogger().info("LastLocationPlugin enabled.");
+        getLogger().info(msg("paper.plugin.enabled"));
     }
 
     @Override
     public void onDisable() {
+        saveOnlinePlayerLocations();
         saveLocations();
-        getLogger().info("LastLocationPlugin disabled.");
+        getLogger().info(msg("paper.plugin.disabled"));
     }
 
     @EventHandler
@@ -60,36 +64,49 @@ public class LastLocationPlugin extends JavaPlugin implements Listener {
         String playerId = player.getUniqueId().toString();
         Location loc = loadPlayerLocation(player);
         if (loc == null) {
-            getLogger().info("No saved location found for " + playerName + " (" + playerId + ").");
+            getLogger().info(msg("paper.restore.no-saved-location",
+                    "player", playerName,
+                    "uuid", playerId));
             return;
         }
 
         Bukkit.getScheduler().runTaskLater(this, () -> {
             if (!player.isOnline()) {
-                getLogger().info("Skipped last-location teleport for " + playerName + " because the player is offline.");
+                getLogger().info(msg("paper.restore.offline-skip", "player", playerName));
                 return;
             }
 
             String target = formatLocation(loc);
-            getLogger().info("Teleporting " + playerName + " to saved location " + target + ".");
+            getLogger().info(msg("paper.restore.teleporting",
+                    "player", playerName,
+                    "target", target));
             player.teleportAsync(loc).whenComplete((success, throwable) -> {
                 if (throwable != null) {
-                    getLogger().warning("Failed to teleport " + playerName + " to saved location "
-                            + target + ": " + throwable);
+                    getLogger().warning(msg("paper.restore.teleport-failed",
+                            "player", playerName,
+                            "target", target,
+                            "error", throwable));
                     return;
                 }
 
                 if (Boolean.TRUE.equals(success)) {
-                    getLogger().info("Teleported " + playerName + " to saved location " + target + ".");
+                    getLogger().info(msg("paper.restore.teleported",
+                            "player", playerName,
+                            "target", target));
                 } else {
-                    getLogger().warning("Teleport to saved location was rejected for " + playerName
-                            + " at " + target + ".");
+                    getLogger().warning(msg("paper.restore.rejected",
+                            "player", playerName,
+                            "target", target));
                 }
             });
         }, 1L);
     }
 
     private void savePlayerLocation(Player player) {
+        savePlayerLocation(player, true);
+    }
+
+    private void savePlayerLocation(Player player, boolean persist) {
         Location loc = player.getLocation();
         World world = loc.getWorld();
         if (world == null) {
@@ -103,8 +120,18 @@ public class LastLocationPlugin extends JavaPlugin implements Listener {
         locConfig.set(path + ".z", loc.getZ());
         locConfig.set(path + ".yaw", loc.getYaw());
         locConfig.set(path + ".pitch", loc.getPitch());
-        saveLocations();
-        getLogger().info("Saved last location for " + player.getName() + " at " + formatLocation(loc) + ".");
+        if (persist) {
+            saveLocations();
+        }
+        getLogger().info(msg("paper.save.location-saved",
+                "player", player.getName(),
+                "target", formatLocation(loc)));
+    }
+
+    private void saveOnlinePlayerLocations() {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            savePlayerLocation(player, false);
+        }
     }
 
     private Location loadPlayerLocation(Player player) {
@@ -115,14 +142,25 @@ public class LastLocationPlugin extends JavaPlugin implements Listener {
 
         String worldName = locConfig.getString(path + ".world");
         if (worldName == null) {
-            getLogger().warning("Saved location for " + player.getName() + " is missing a world name.");
+            getLogger().warning(msg("paper.load.missing-world-name", "player", player.getName()));
             return null;
         }
 
         World world = Bukkit.getWorld(worldName);
         if (world == null) {
-            getLogger().warning("Saved location for " + player.getName() + " points to unloaded or missing world: " + worldName + ".");
-            return null;
+            getLogger().warning(msg("paper.load.missing-world",
+                    "player", player.getName(),
+                    "world", worldName));
+            Location spawn = getServerSpawnLocation();
+            if (spawn == null) {
+                getLogger().warning(msg("paper.load.no-spawn", "player", player.getName()));
+                return null;
+            }
+
+            getLogger().info(msg("paper.load.fallback-spawn",
+                    "player", player.getName(),
+                    "world", worldName));
+            return spawn;
         }
 
         double x = locConfig.getDouble(path + ".x");
@@ -131,6 +169,14 @@ public class LastLocationPlugin extends JavaPlugin implements Listener {
         float yaw = (float) locConfig.getDouble(path + ".yaw");
         float pitch = (float) locConfig.getDouble(path + ".pitch");
         return new Location(world, x, y, z, yaw, pitch);
+    }
+
+    private Location getServerSpawnLocation() {
+        if (Bukkit.getWorlds().isEmpty()) {
+            return null;
+        }
+
+        return Bukkit.getWorlds().get(0).getSpawnLocation();
     }
 
     private String formatLocation(Location loc) {
@@ -146,8 +192,22 @@ public class LastLocationPlugin extends JavaPlugin implements Listener {
         try {
             locConfig.save(locFile);
         } catch (IOException e) {
-            getLogger().severe("Failed to save locations.yml");
+            getLogger().severe(msg("paper.locations.save-failed"));
             e.printStackTrace();
         }
+    }
+
+    private void loadMessages() {
+        try {
+            messages = Messages.load(getDataFolder().toPath(), getClass().getClassLoader());
+        } catch (IOException e) {
+            messages = Messages.fallback(getClass().getClassLoader());
+            getLogger().severe("Failed to load i18n messages.");
+            e.printStackTrace();
+        }
+    }
+
+    private String msg(String key, Object... placeholders) {
+        return messages.get(key, placeholders);
     }
 }
